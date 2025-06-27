@@ -1,6 +1,7 @@
 import os
 import jsonlines
 from pathlib import Path
+import sys
 
 from llama_index.core import Document, Settings, VectorStoreIndex
 from llama_index.core.storage.storage_context import StorageContext
@@ -9,7 +10,8 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
 
 # --- Конфигурация ---
-DATA_DIR = Path("../data")
+PROJECT_ROOT = Path(__file__).parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
 KNOWLEDGE_BASE_FILE = DATA_DIR / "knowledge_base.jsonl"
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = os.getenv("CHROMA_PORT", "8001") # 8001, чтобы не конфликтовать с FastAPI
@@ -22,8 +24,9 @@ def ingest_data():
     Загружает обработанные данные в ChromaDB.
     """
     if not KNOWLEDGE_BASE_FILE.exists():
-        print(f"Файл {KNOWLEDGE_BASE_FILE} не найден. Сначала запустите build_knowledge_base.py")
-        return
+        print(f"ОШИБКА: Файл базы знаний {KNOWLEDGE_BASE_FILE} не найден.")
+        print("Пожалуйста, сначала запустите скрипт: python rag_pipeline/build_knowledge_base.py")
+        sys.exit(1)
 
     # 1. Загружаем документы из .jsonl
     documents = []
@@ -46,7 +49,16 @@ def ingest_data():
     print(f"Загружено {len(documents)} документов для индексации.")
 
     # 2. Настраиваем подключение к ChromaDB
-    chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+    try:
+        chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+        # Проверяем, что сервер доступен
+        chroma_client.heartbeat()
+        print("Успешное подключение к ChromaDB.")
+    except Exception as e:
+        print(f"ОШИБКА: Не удалось подключиться к ChromaDB по адресу {CHROMA_HOST}:{CHROMA_PORT}.")
+        print("Убедитесь, что сервисы запущены командой: docker-compose up -d chromadb")
+        print(f"Детали ошибки: {e}")
+        sys.exit(1)
     
     # Удаляем старую коллекцию, если она есть, для чистоты примера
     # В продакшене может понадобиться логика обновления
@@ -62,12 +74,22 @@ def ingest_data():
 
     # 3. Настраиваем модель для эмбеддингов
     # Используем Ollama для локальных эмбеддингов
-    embed_model = OllamaEmbedding(
-        model_name=LLM_MODEL_NAME, 
-        base_url=OLLAMA_BASE_URL
-    )
-    Settings.embed_model = embed_model
-    Settings.llm = None # LLM здесь не нужен, только для эмбеддингов
+    try:
+        embed_model = OllamaEmbedding(
+            model_name=LLM_MODEL_NAME, 
+            base_url=OLLAMA_BASE_URL
+        )
+        Settings.embed_model = embed_model
+        Settings.llm = None # LLM здесь не нужен, только для эмбеддингов
+    except ImportError:
+        print("ОШИБКА: Не найден пакет llama-index-embeddings-ollama.")
+        print("Пожалуйста, установите его командой: pip install llama-index-embeddings-ollama")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ОШИБКА: Не удалось инициализировать модель эмбеддингов Ollama.")
+        print("Убедитесь, что Ollama запущена и модель '{LLM_MODEL_NAME}' доступна.")
+        print(f"Детали ошибки: {e}")
+        sys.exit(1)
 
     # 4. Создаем и сохраняем индекс
     print("Создание индекса... Это может занять некоторое время.")

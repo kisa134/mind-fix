@@ -4,21 +4,17 @@ import jsonlines
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from llama_index.core import Document, Settings
+from llama_index.core import Document, Settings, SimpleDirectoryReader
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.program import LLMTextCompletionProgram
 from llama_index.core.prompts import PromptTemplate
 from llama_index.llms.ollama import Ollama
-from llama_index.readers.file import (
-    DocxReader,
-    PDFReader,
-    MarkdownReader,
-    JSONReader,
-)
 from pydantic import BaseModel, Field
 
 # --- Конфигурация ---
-DATA_DIR = Path("../data")
+# Определяем корень проекта относительно текущего файла
+PROJECT_ROOT = Path(__file__).parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
 OUTPUT_FILE = DATA_DIR / "knowledge_base.jsonl"
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "llama3.1:8b")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -89,80 +85,117 @@ def classify_chunk_by_keywords(text: str) -> dict:
 #         return classify_chunk_by_keywords(text)
 
 
+def load_all_documents(data_dir: Path) -> List[Document]:
+    """
+    Загружает все документы из указанной директории, используя
+    SimpleDirectoryReader для стандартных форматов и ручную обработку для .json.
+    """
+    docs = []
+    
+    # Проверяем, существует ли папка data и не пуста ли она
+    if not data_dir.exists():
+        print(f"Папка {data_dir} не найдена. Создаю её.")
+        data_dir.mkdir()
+    
+    if not any(data_dir.iterdir()):
+        print(f"ПРЕДУПРЕЖДЕНИЕ: Папка {data_dir} пуста. Нет документов для обработки.")
+        return docs
+
+    # 1. Используем SimpleDirectoryReader для всех файлов, кроме .json
+    print("Загрузка стандартных документов (docx, pdf, md, txt)...")
+    reader = SimpleDirectoryReader(
+        input_dir=data_dir,
+        exclude=["*.json"],
+        recursive=True,
+    )
+    docs.extend(reader.load_data(show_progress=True))
+    
+    # 2. Ручная обработка .json файлов
+    print("Обработка JSON файлов...")
+    for json_path in data_dir.rglob("*.json"):
+        try:
+            print(f"Обработка {json_path.name}...")
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            messages = []
+            # Гибко ищем список сообщений
+            if isinstance(data, dict) and "messages" in data:
+                messages = data["messages"]
+            elif isinstance(data, list):
+                messages = data
+
+            if messages:
+                for message in messages:
+                    if isinstance(message, dict) and message.get("type") == "message" and message.get("text"):
+                        text_content = ""
+                        raw_text = message.get("text", "")
+                        if isinstance(raw_text, list):
+                            for item in raw_text:
+                                if isinstance(item, str):
+                                    text_content += item
+                                elif isinstance(item, dict) and "text" in item:
+                                    text_content += item.get("text", "")
+                        else:
+                            text_content = str(raw_text)
+                        
+                        if text_content.strip():
+                            docs.append(Document(
+                                text=text_content, 
+                                metadata={"source": json_path.name}
+                            ))
+            else: # Если это другой JSON, просто загружаем его как есть
+                text_content = json.dumps(data, ensure_ascii=False)
+                docs.append(Document(
+                    text=text_content, 
+                    metadata={"source": json_path.name}
+                ))
+        except Exception as e:
+            print(f"Не удалось обработать JSON-файл {json_path.name}: {e}")
+
+    print(f"Всего загружено документов: {len(docs)}")
+    return docs
+
+
 def process_documents(use_llm_classifier: bool = False):
     """
     Основная функция для обработки всех документов в DATA_DIR.
-    
-    Args:
-        use_llm_classifier: Использовать LLM для классификации. 
-                            Требует запущенного сервиса Ollama.
     """
-    # Определяем, какую функцию классификации использовать
-    classifier = classify_chunk_with_llm if use_llm_classifier else classify_chunk_by_keywords
+    # Этот блок гарантирует, что папка будет создана, если её нет
+    if not DATA_DIR.exists():
+        print(f"Папка {DATA_DIR} не найдена. Создаю её.")
+        DATA_DIR.mkdir()
 
-    # Настраиваем ридеры для разных типов файлов
-    # SimpleDirectoryReader не подошел, т.к. нужна кастомная логика для json
-    file_readers = {
-        ".docx": DocxReader(),
-        ".pdf": PDFReader(),
-        ".md": MarkdownReader(),
-        ".txt": None,  # Будем читать как обычный текст
-        ".json": JSONReader(),
-    }
+    classifier = classify_chunk_with_llm if use_llm_classifier else classify_chunk_by_keywords
     
+    # 1. Загружаем все документы
+    documents = load_all_documents(DATA_DIR)
+    
+    # 2. Разбиваем на чанки (ноды)
     splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
+    nodes = splitter.get_nodes_from_documents(documents, show_progress=True)
 
     print("Очищаем старую базу знаний (если есть)...")
     if OUTPUT_FILE.exists():
         OUTPUT_FILE.unlink()
 
+    print(f"Начинаем обработку {len(nodes)} блоков текста...")
     with jsonlines.open(OUTPUT_FILE, mode='w') as writer:
-        for filepath in DATA_DIR.iterdir():
-            if filepath.is_file() and filepath.suffix in file_readers:
-                print(f"Обработка файла: {filepath.name}...")
-                
-                chunks = []
-                # Специальная обработка для JSON
-                if filepath.suffix == ".json":
-                    try:
-                        with open(filepath, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                        # Предполагаем, что result.json - это список диалогов
-                        if filepath.name == "result.json" and isinstance(data, list):
-                            for message in data:
-                                if isinstance(message, dict) and "text" in message:
-                                    chunks.append(str(message["text"])) # Приводим к строке на всякий случай
-                        else:
-                            # Для других JSON можно реализовать свою логику
-                            # или просто извлечь весь текст
-                            chunks = [json.dumps(data, ensure_ascii=False)]
-                    except Exception as e:
-                        print(f"Не удалось обработать JSON-файл {filepath.name}: {e}")
-                        continue
-                else:
-                    # Обработка текстовых файлов
-                    if filepath.suffix == ".txt":
-                        text = filepath.read_text(encoding="utf-8")
-                        docs = [Document(text=text)]
-                    else:
-                        docs = file_readers[filepath.suffix].load_data(filepath)
-                    
-                    nodes = splitter.get_nodes_from_documents(docs)
-                    chunks.extend([node.text for node in nodes])
-                
-                # Классификация и сохранение
-                for text_chunk in chunks:
-                    if not text_chunk.strip():
-                        continue
-                    
-                    classification_result = classifier(text_chunk)
-                    
-                    chunk_obj = KnowledgeChunk(
-                        **classification_result,
-                        source=filepath.name,
-                        text=text_chunk,
-                    )
-                    writer.write(chunk_obj.dict())
+        for node in nodes:
+            text_chunk = node.get_content()
+            if not text_chunk.strip():
+                continue
+            
+            source_file = node.metadata.get("file_name") or node.metadata.get("source", "N/A")
+            
+            classification_result = classifier(text_chunk)
+            
+            chunk_obj = KnowledgeChunk(
+                **classification_result,
+                source=Path(source_file).name,
+                text=text_chunk,
+            )
+            writer.write(chunk_obj.dict())
 
 if __name__ == "__main__":
     # Для использования LLM-классификатора, передайте True
