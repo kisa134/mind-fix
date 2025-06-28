@@ -9,18 +9,13 @@ from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
+from .config import settings
+
 # --- Глобальные переменные и инициализация ---
 
-# Загружаем конфигурацию из переменных окружения
-CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
-CHROMA_PORT = os.getenv("CHROMA_PORT", "8000") # Внутренний порт ChromaDB
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "llama3.1:8b")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-COLLECTION_NAME = "mind_fix_kb"
-
-# Инициализируем LLM и модель для эмбеддингов
-llm = Ollama(model=LLM_MODEL_NAME, base_url=OLLAMA_BASE_URL)
-embed_model = OllamaEmbedding(model_name=LLM_MODEL_NAME, base_url=OLLAMA_BASE_URL)
+# Инициализируем LLM и модель для эмбеддингов, используя централизованный конфиг
+llm = Ollama(model=settings.LLM_MODEL_NAME, base_url=settings.OLLAMA_BASE_URL)
+embed_model = OllamaEmbedding(model_name=settings.LLM_MODEL_NAME, base_url=settings.OLLAMA_BASE_URL)
 
 Settings.llm = llm
 Settings.embed_model = embed_model
@@ -35,8 +30,8 @@ def get_query_engine():
     Эта функция будет вызываться при старте приложения.
     """
     try:
-        chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-        collection = chroma_client.get_collection(COLLECTION_NAME)
+        chroma_client = chromadb.HttpClient(host=settings.CHROMA_HOST, port=settings.CHROMA_PORT)
+        collection = chroma_client.get_collection(settings.CHROMA_COLLECTION)
         vector_store = ChromaVectorStore(chroma_collection=collection)
         
         index = VectorStoreIndex.from_vector_store(

@@ -1,6 +1,7 @@
 import os
 import json
 import jsonlines
+import sys
 from pathlib import Path
 from typing import List, Literal, Optional
 
@@ -11,13 +12,14 @@ from llama_index.core.prompts import PromptTemplate
 from llama_index.llms.ollama import Ollama
 from pydantic import BaseModel, Field
 
+from core.config import settings
+
 # --- Конфигурация ---
-# Определяем корень проекта относительно текущего файла
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-OUTPUT_FILE = DATA_DIR / "knowledge_base.jsonl"
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "llama3.1:8b")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+# Все настройки теперь берутся из core.config
+DATA_DIR = settings.DATA_DIR
+OUTPUT_FILE = settings.KNOWLEDGE_BASE_FILE
+LLM_MODEL_NAME = settings.LLM_MODEL_NAME
+OLLAMA_BASE_URL = settings.OLLAMA_BASE_URL
 
 # --- Модели данных ---
 class KnowledgeChunk(BaseModel):
@@ -52,37 +54,38 @@ def classify_chunk_by_keywords(text: str) -> dict:
     return {"type": "extra", "topic": None}
 
 
-# --- Продвинутая классификация через LLM (рекомендуется) ---
+# --- Продвинутая классификация через LLM (восстановлено) ---
+prompt = PromptTemplate(
+    "Определи тип и основную тему для следующего текстового блока. "
+    "Тип должен быть одним из: theory, practice, extra. "
+    "Тема должна быть коротким названием, например, 'тревога' или 'весы души'. "
+    "Если тему определить не удается, оставь поле пустым.\n\n"
+    "Текст: {text}\n"
+)
 
-# Закомментировано, чтобы не требовать запуск Ollama для базовой обработки.
-# Инструкции по активации в README.md или в комментариях ниже.
+try:
+    program = LLMTextCompletionProgram.from_defaults(
+        output_cls=KnowledgeChunk,
+        llm=Ollama(model=LLM_MODEL_NAME, base_url=OLLAMA_BASE_URL),
+        prompt=prompt,
+    )
+except Exception as e:
+    print(f"ПРЕДУПРЕЖДЕНИЕ: Не удалось инициализировать LLM-классификатор. LLM-классификация будет недоступна. Ошибка: {e}")
+    program = None
 
-# prompt = PromptTemplate(
-#     "Определи тип и основную тему для следующего текстового блока. "
-#     "Тип должен быть одним из: theory, practice, extra. "
-#     "Тема должна быть коротким названием, например, 'тревога' или 'весы души'. "
-#     "Если тему определить не удается, оставь поле пустым.\n\n"
-#     "Текст: {text}\n"
-# )
-
-# program = LLMTextCompletionProgram.from_defaults(
-#     output_cls=KnowledgeChunk,
-#     llm=Ollama(model=LLM_MODEL_NAME, base_url=OLLAMA_BASE_URL),
-#     prompt=prompt,
-# )
-
-# def classify_chunk_with_llm(text: str) -> dict:
-#     """
-#     Классифицирует чанк с помощью LLM.
-#     Возвращает словарь, совместимый с KnowledgeChunk.
-#     """
-#     try:
-#         result = program(text=text)
-#         return result.dict()
-#     except Exception as e:
-#         print(f"Ошибка классификации через LLM: {e}")
-#         # В случае ошибки используем запасной вариант
-#         return classify_chunk_by_keywords(text)
+def classify_chunk_with_llm(text: str) -> dict:
+    """
+    Классифицирует чанк с помощью LLM.
+    Возвращает словарь, совместимый с KnowledgeChunk.
+    """
+    if not program:
+        return classify_chunk_by_keywords(text)
+    try:
+        result = program(text=text)
+        return result.dict()
+    except Exception as e:
+        print(f"Ошибка классификации через LLM: {e}")
+        return classify_chunk_by_keywords(text)
 
 
 def load_all_documents(data_dir: Path) -> List[Document]:
@@ -104,7 +107,7 @@ def load_all_documents(data_dir: Path) -> List[Document]:
     # 1. Используем SimpleDirectoryReader для всех файлов, кроме .json
     print("Загрузка стандартных документов (docx, pdf, md, txt)...")
     reader = SimpleDirectoryReader(
-        input_dir=data_dir,
+        input_dir=str(data_dir),
         exclude=["*.json"],
         recursive=True,
     )
@@ -140,16 +143,14 @@ def load_all_documents(data_dir: Path) -> List[Document]:
                             text_content = str(raw_text)
                         
                         if text_content.strip():
-                            docs.append(Document(
-                                text=text_content, 
-                                metadata={"source": json_path.name}
-                            ))
+                            doc = Document(text=text_content)
+                            doc.metadata = {"source": json_path.name}
+                            docs.append(doc)
             else: # Если это другой JSON, просто загружаем его как есть
                 text_content = json.dumps(data, ensure_ascii=False)
-                docs.append(Document(
-                    text=text_content, 
-                    metadata={"source": json_path.name}
-                ))
+                doc = Document(text=text_content)
+                doc.metadata = {"source": json_path.name}
+                docs.append(doc)
         except Exception as e:
             print(f"Не удалось обработать JSON-файл {json_path.name}: {e}")
 

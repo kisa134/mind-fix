@@ -9,15 +9,15 @@ from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
 
+from core.config import settings
+
 # --- Конфигурация ---
-PROJECT_ROOT = Path(__file__).parent.parent
-DATA_DIR = PROJECT_ROOT / "data"
-KNOWLEDGE_BASE_FILE = DATA_DIR / "knowledge_base.jsonl"
-CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
-CHROMA_PORT = os.getenv("CHROMA_PORT", "8001") # 8001, чтобы не конфликтовать с FastAPI
-LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "llama3.1:8b")
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-COLLECTION_NAME = "mind_fix_kb"
+KNOWLEDGE_BASE_FILE = settings.KNOWLEDGE_BASE_FILE
+CHROMA_HOST = settings.CHROMA_HOST
+CHROMA_PORT = settings.CHROMA_PORT
+LLM_MODEL_NAME = settings.LLM_MODEL_NAME
+OLLAMA_BASE_URL = settings.OLLAMA_BASE_URL
+COLLECTION_NAME = settings.CHROMA_COLLECTION
 
 def ingest_data():
     """
@@ -32,14 +32,12 @@ def ingest_data():
     documents = []
     with jsonlines.open(KNOWLEDGE_BASE_FILE) as reader:
         for item in reader:
-            doc = Document(
-                text=item["text"],
-                metadata={
-                    "source": item["source"],
-                    "type": item["type"],
-                    "topic": item["topic"] or "N/A", # Chroma не любит None в метаданных
-                },
-            )
+            doc = Document(text=item["text"])
+            doc.metadata={
+                "source": item["source"],
+                "type": item["type"],
+                "topic": item["topic"] or "N/A", # Chroma не любит None в метаданных
+            }
             documents.append(doc)
     
     if not documents:
@@ -80,7 +78,6 @@ def ingest_data():
             base_url=OLLAMA_BASE_URL
         )
         Settings.embed_model = embed_model
-        Settings.llm = None # LLM здесь не нужен, только для эмбеддингов
     except ImportError:
         print("ОШИБКА: Не найден пакет llama-index-embeddings-ollama.")
         print("Пожалуйста, установите его командой: pip install llama-index-embeddings-ollama")
