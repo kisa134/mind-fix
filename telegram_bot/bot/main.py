@@ -7,7 +7,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from core.config import settings
-# from .handlers import common, chat
+from handlers import chat
 
 async def main() -> None:
     """
@@ -24,9 +24,8 @@ async def main() -> None:
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN, default=default_properties)
     dp = Dispatcher()
 
-    # Сюда будут подключаться роутеры
-    # dp.include_router(common.router)
-    # dp.include_router(chat.router)
+    # Подключаем роутеры
+    dp.include_router(chat.router)
     
     logging.info("Telegram-бот запущен и готов к работе.")
     await dp.start_polling(bot)

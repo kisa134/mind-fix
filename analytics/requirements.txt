@@ -1,4 +1,6 @@
-streamlit==1.35.0
+streamlit==1.36.0
 pandas==2.2.2
+plotly-express==0.4.1
+wordcloud==1.9.3
 psycopg2-binary==2.9.9
 python-dotenv==1.0.1 

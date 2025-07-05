@@ -3,41 +3,38 @@ from typing import Optional, Literal
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 
-from app.core.rag import execute_query
+from app.core.rag import anything_llm_client
+from app.core.config import settings
 
 router = APIRouter()
 
 class RAGQueryRequest(BaseModel):
     text: str
-    doc_type: Optional[Literal["theory", "practice", "extra"]] = None
-    topic: Optional[str] = None
+    # doc_type и topic больше не нужны, т.к. AnythingLLM управляет контекстом
+    # внутри своего рабочего пространства (workspace)
 
 class RAGQueryResponse(BaseModel):
     response: str
-    # В будущем можно добавить источники (source_nodes)
-    # sources: list = []
-
-def get_rag_service(request: Request):
-    """Зависимость для получения query_engine из состояния приложения."""
-    return request.app.state.query_engine
+    sources: list = []
 
 @router.post("/query", response_model=RAGQueryResponse)
-async def query_rag(request: RAGQueryRequest, query_engine = Depends(get_rag_service)):
+async def query_rag(request: RAGQueryRequest):
     """
-    Отправляет запрос к RAG-сервису для получения ответа,
+    Отправляет запрос к AnythingLLM для получения ответа,
     обогащенного данными из базы знаний.
     """
-    if query_engine is None:
-        raise HTTPException(status_code=503, detail="RAG сервис недоступен. Проверьте логи сервера.")
+    if not settings.ANYTHINGLLM_WORKSPACE_SLUG:
+        raise HTTPException(status_code=500, detail="Не настроен `ANYTHINGLLM_WORKSPACE_SLUG` в .env")
 
-    try:
-        result = execute_query(
-            query_engine=query_engine,
-            query_text=request.text,
-            doc_type=request.doc_type,
-            topic=request.topic,
-        )
-        return {"response": str(result)}
-    except Exception as e:
-        # Логирование ошибки здесь было бы полезно
-        raise HTTPException(status_code=500, detail=str(e)) 
+    result = await anything_llm_client.query_workspace(
+        workspace_slug=settings.ANYTHINGLLM_WORKSPACE_SLUG,
+        query=request.text
+    )
+
+    if result and "error" not in result:
+        text_response = result.get("textResponse", "Ответ не найден.")
+        sources = result.get("sourceDocuments", [])
+        return {"response": text_response, "sources": sources}
+    else:
+        error_detail = result.get("error", "Неизвестная ошибка от AnythingLLM")
+        raise HTTPException(status_code=503, detail=error_detail) 
